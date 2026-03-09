@@ -1,0 +1,192 @@
+import { useEffect, useState } from 'react';
+import { fetchApi } from '../api/client';
+import { wsClient } from '../api/ws';
+import { formatDateTime, truncateId } from '../format';
+import type { Session } from '../types';
+
+type SessionsResponse = { sessions: Session[] };
+type SessionResponse = { session: Session };
+
+export function Sessions() {
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadSessions = async () => {
+      try {
+        const response = await fetchApi<SessionsResponse>('/api/sessions');
+        if (!active) {
+          return;
+        }
+
+        setSessions(response.sessions);
+        setSelectedId((current) => current ?? response.sessions[0]?.sessionId ?? null);
+        setError(null);
+      } catch (loadError) {
+        if (active) {
+          setError(readError(loadError));
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadSessions();
+    wsClient.connect();
+
+    const unsubscribe = wsClient.subscribe((event) => {
+      if (event === 'connected' || event === 'ready' || event === 'session:updated') {
+        void loadSessions();
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setSelectedSession(null);
+      return;
+    }
+
+    let active = true;
+
+    const loadSession = async () => {
+      try {
+        const response = await fetchApi<SessionResponse>(`/api/sessions/${encodeURIComponent(selectedId)}`);
+        if (active) {
+          setSelectedSession(response.session);
+        }
+      } catch (loadError) {
+        if (active) {
+          setError(readError(loadError));
+        }
+      }
+    };
+
+    void loadSession();
+
+    return () => {
+      active = false;
+    };
+  }, [selectedId]);
+
+  return (
+    <section style={{ display: 'grid', gap: 18 }}>
+      <header>
+        <div style={{ fontSize: 12, letterSpacing: '0.16em', textTransform: 'uppercase', color: '#64748b' }}>
+          AC21
+        </div>
+        <h2 style={{ marginTop: 8, fontSize: 34, lineHeight: 1.05 }}>Sessions</h2>
+        <p style={{ marginTop: 10, maxWidth: 740, color: '#475569', lineHeight: 1.7 }}>
+          Session inventory from <code>/api/sessions</code> with a focused detail pane for the selected session.
+        </p>
+      </header>
+
+      {error ? (
+        <div className="error-banner">{error}</div>
+      ) : null}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 18 }}>
+        <section className="panel" style={{ overflowX: 'auto' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Session</th>
+                <th>Provider</th>
+                <th>State</th>
+                <th>Model</th>
+                <th>Last Used</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessions.map((session) => (
+                <tr
+                  key={session.sessionId}
+                  onClick={() => {
+                    setSelectedId(session.sessionId);
+                  }}
+                  style={{
+                    cursor: 'pointer',
+                    background: session.sessionId === selectedId ? 'rgba(191, 219, 254, 0.35)' : undefined,
+                  }}
+                >
+                  <td>{truncateId(session.sessionId)}</td>
+                  <td>{session.provider}</td>
+                  <td>{session.state}</td>
+                  <td>{session.model}</td>
+                  <td>{formatDateTime(session.lastUsedAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {!loading && sessions.length === 0 ? (
+            <div style={{ marginTop: 16, color: '#64748b' }}>No sessions indexed yet.</div>
+          ) : null}
+        </section>
+
+        <section className="panel" style={{ display: 'grid', gap: 14, alignContent: 'start' }}>
+          <div>
+            <h3 style={{ fontSize: 20 }}>Session Detail</h3>
+            <p style={{ marginTop: 6, color: '#64748b' }}>
+              {selectedSession ? 'Loaded from /api/sessions/:sessionId' : 'Select a session from the table.'}
+            </p>
+          </div>
+
+          {selectedSession ? (
+            <div style={{ display: 'grid', gap: 12 }}>
+              <DetailRow label="Session ID" value={selectedSession.sessionId} />
+              <DetailRow label="Provider" value={selectedSession.provider} />
+              <DetailRow label="Name" value={selectedSession.name} />
+              <DetailRow label="State" value={selectedSession.state} />
+              <DetailRow label="Model" value={selectedSession.model} />
+              <DetailRow label="Working Directory" value={selectedSession.cwd} />
+              <DetailRow label="Project Root" value={selectedSession.projectRoot ?? 'n/a'} />
+              <DetailRow label="Shard Hash" value={selectedSession.shardHash} />
+              <DetailRow label="Provenance" value={selectedSession.provenanceState} />
+              <DetailRow label="Created" value={formatDateTime(selectedSession.createdAt)} />
+              <DetailRow label="Last Used" value={formatDateTime(selectedSession.lastUsedAt)} />
+              <DetailRow label="Active Job" value={selectedSession.activeJobId ?? 'n/a'} />
+              <DetailRow label="Last Job" value={selectedSession.lastJobId ?? 'n/a'} />
+            </div>
+          ) : (
+            <div style={{ color: '#64748b' }}>No session selected.</div>
+          )}
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <article
+      style={{
+        padding: '12px 14px',
+        borderRadius: 14,
+        background: '#ffffff',
+        border: '1px solid rgba(15, 23, 42, 0.08)',
+      }}
+    >
+      <div style={{ fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#64748b' }}>
+        {label}
+      </div>
+      <div style={{ marginTop: 8, lineHeight: 1.6, wordBreak: 'break-word' }}>{value}</div>
+    </article>
+  );
+}
+
+function readError(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unknown error';
+}
