@@ -100,6 +100,31 @@ export function initSchema(db: Database.Database): void {
   migrateSchema(db);
 }
 
+export function ensureLocalAutoRow(db: Database.Database): void {
+  db.prepare(`
+    INSERT OR IGNORE INTO connections (id, label, source, status, createdAt)
+    VALUES ('local:auto', 'Local backend', 'auto', 'disconnected', ?)
+  `).run(new Date().toISOString());
+}
+
+export function updateLocalAutoConnection(
+  db: Database.Database,
+  update: { host: string; port: number; token: string } | { error: string },
+): void {
+  if ('error' in update) {
+    db.prepare(`
+      UPDATE connections SET status = 'error', lastError = ?, lastSeenAt = ?
+      WHERE id = 'local:auto'
+    `).run(update.error, new Date().toISOString());
+    return;
+  }
+
+  db.prepare(`
+    UPDATE connections SET host = ?, port = ?, token = ?, status = 'connected', lastError = NULL, lastSeenAt = ?
+    WHERE id = 'local:auto'
+  `).run(update.host, update.port, update.token, new Date().toISOString());
+}
+
 function migrateSchema(db: Database.Database): void {
   const version = db.pragma('user_version', { simple: true }) as number;
   if (version >= CURRENT_VERSION) return;

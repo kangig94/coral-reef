@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { routeApi, sendJson } from '../api/router.js';
 import { runIndexer, SseClient } from '../indexer/index.js';
 import { closeDb, getDb } from './db.js';
+import { ensureLocalAutoRow } from './schema.js';
 import { createWsRelay } from './ws.js';
 
 const PORT = parseInt(process.env.CORAL_REEF_PORT ?? '3100', 10);
@@ -14,6 +15,7 @@ const FRONTEND_INDEX_PATH = resolve(FRONTEND_DIST_DIR, 'index.html');
 
 function main(): void {
   const db = getDb();
+  ensureLocalAutoRow(db);
   runIndexer(db);
 
   const sseClient = new SseClient(db);

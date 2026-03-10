@@ -1,8 +1,10 @@
 import type Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { BACKEND_INFO_PATH } from 'coral/client';
+import { updateLocalAutoConnection } from '../server/schema.js';
 
 type BackendInfo = {
+  host: string;
   port: number;
   token: string;
   instanceId: string;
@@ -69,10 +71,12 @@ export class SseClient {
 
     const info = readBackendInfo();
     if (!info) {
+      updateLocalAutoConnection(this.db, { error: 'Backend not available' });
       this.scheduleReconnect(5_000);
       return;
     }
 
+    updateLocalAutoConnection(this.db, { host: info.host, port: info.port, token: info.token });
     this.state = 'connecting';
 
     const abortController = new AbortController();
@@ -85,6 +89,7 @@ export class SseClient {
         }
 
         const message = error instanceof Error ? error.message : String(error);
+        updateLocalAutoConnection(this.db, { error: message });
         process.stderr.write(`[sse] Stream error: ${message}\n`);
       })
       .finally(() => {
@@ -104,7 +109,7 @@ export class SseClient {
   }
 
   private async consumeStream(info: BackendInfo, signal: AbortSignal): Promise<void> {
-    const response = await fetch(`http://127.0.0.1:${info.port}/events/stream`, {
+    const response = await fetch(`http://${info.host}:${info.port}/events/stream`, {
       method: 'GET',
       headers: {
         'X-Coral-Backend-Token': info.token,
@@ -318,6 +323,7 @@ function readBackendInfo(): BackendInfo | null {
     }
 
     return {
+      host: typeof raw.host === 'string' ? raw.host : '127.0.0.1',
       port: raw.port,
       token: raw.token,
       instanceId: typeof raw.instanceId === 'string' ? raw.instanceId : '',
