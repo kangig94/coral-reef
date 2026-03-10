@@ -35,7 +35,7 @@ export async function routeApi(
   if (url.startsWith('/api/workflows')) return handleWorkflows(req, res, db);
   if (url.startsWith('/api/metrics')) return handleMetrics(req, res, db);
   if (url.startsWith('/api/chat')) return handleChat(req, res);
-  if (url.startsWith('/api/system/health')) return handleHealth(req, res, db);
+  if (url.startsWith('/api/system/health')) return handleHealth(req, res, db, manager);
 
   return false;
 }

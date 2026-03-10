@@ -76,8 +76,15 @@ export function Sessions() {
 
     void loadSession();
 
+    const unsubscribe = wsClient.subscribe((event) => {
+      if (event === 'session:updated' || event === 'ready' || event === 'connected') {
+        void loadSession();
+      }
+    });
+
     return () => {
       active = false;
+      unsubscribe();
     };
   }, [selectedId]);
 

@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { BACKEND_INFO_PATH, type BackendHealth } from 'coral/client';
+import type { ConnectionManager } from '../indexer/connection-manager.js';
 import { getIndexerStatus } from '../indexer/index.js';
 import { sendJson } from './router.js';
 
@@ -9,6 +10,7 @@ const HEALTH_TIMEOUT_MS = 3_000;
 
 type BackendInfoFile = {
   pid: number;
+  host: string;
   port: number;
   token: string;
   version: string;
@@ -28,6 +30,7 @@ export async function handleHealth(
   req: IncomingMessage,
   res: ServerResponse,
   db: Database.Database,
+  manager?: ConnectionManager,
 ): Promise<boolean> {
   if (req.method !== 'GET') {
     return false;
@@ -43,7 +46,7 @@ export async function handleHealth(
   const pageSize = Number(db.pragma('page_size', { simple: true }) ?? 0);
   const journalMode = String(db.pragma('journal_mode', { simple: true }) ?? 'unknown');
 
-  sendJson(res, 200, {
+  const response: Record<string, unknown> = {
     status: 'ok',
     indexer: getIndexerStatus(),
     db: {
@@ -61,7 +64,19 @@ export async function handleHealth(
       },
     },
     backend,
-  });
+  };
+
+  if (manager) {
+    response.backends = manager.listConnections().map((conn) => ({
+      id: conn.id,
+      label: conn.label,
+      host: conn.host,
+      sseState: (conn as Record<string, unknown>).sseState ?? 'disconnected',
+      status: conn.status,
+    }));
+  }
+
+  sendJson(res, 200, response);
   return true;
 }
 
@@ -93,7 +108,7 @@ async function readBackendStatus(): Promise<BackendStatus> {
   const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
 
   try {
-    const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
+    const response = await fetch(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
       headers: { 'X-Coral-Backend-Token': info.token },
       signal: controller.signal,
@@ -126,14 +141,21 @@ async function readBackendStatus(): Promise<BackendStatus> {
 }
 
 function isBackendInfoFile(value: unknown): value is BackendInfoFile {
-  return isRecord(value)
-    && Number.isInteger(value.pid)
-    && Number.isInteger(value.port)
-    && typeof value.token === 'string'
-    && typeof value.version === 'string'
-    && typeof value.bundleHash === 'string'
-    && typeof value.instanceId === 'string'
-    && Number.isFinite(value.startedAt);
+  if (!isRecord(value)
+    || !Number.isInteger(value.pid)
+    || !Number.isInteger(value.port)
+    || typeof value.token !== 'string'
+    || typeof value.version !== 'string'
+    || typeof value.bundleHash !== 'string'
+    || typeof value.instanceId !== 'string'
+    || !Number.isFinite(value.startedAt)) {
+    return false;
+  }
+
+  if (typeof value.host !== 'string') {
+    (value as Record<string, unknown>).host = '127.0.0.1';
+  }
+  return true;
 }
 
 function isBackendHealth(value: unknown): value is BackendHealth {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { fetchApi } from '../api/client';
+import { wsClient } from '../api/ws';
 import { formatDateTime, truncateId } from '../format';
 import type { DiscussSession, TranscriptEntry } from '../types';
 
@@ -46,9 +47,17 @@ export function DiscussViewer() {
     };
 
     void loadSessions();
+    wsClient.connect();
+
+    const unsubscribe = wsClient.subscribe((event) => {
+      if (event === 'connected' || event === 'ready' || event === 'discuss:event') {
+        void loadSessions();
+      }
+    });
 
     return () => {
       active = false;
+      unsubscribe();
     };
   }, []);
 
@@ -80,8 +89,15 @@ export function DiscussViewer() {
 
     void loadTranscript();
 
+    const unsubscribe = wsClient.subscribe((event) => {
+      if (event === 'discuss:event' || event === 'ready' || event === 'connected') {
+        void loadTranscript();
+      }
+    });
+
     return () => {
       active = false;
+      unsubscribe();
     };
   }, [sessionId]);
 
