@@ -1,12 +1,12 @@
 import type { Server } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { SseClient } from '../indexer/sse-client.js';
+import type { ConnectionManager } from '../indexer/connection-manager.js';
 
-export function createWsRelay(httpServer: Server, sseClient: SseClient): WebSocketServer {
+export function createWsRelay(httpServer: Server, manager: ConnectionManager): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
-  const broadcast = (event: string, data: Record<string, unknown>): void => {
-    const message = JSON.stringify({ event, data });
+  const broadcast = (event: string, data: Record<string, unknown>, source: string): void => {
+    const message = JSON.stringify({ event, data, source });
 
     for (const client of wss.clients) {
       if (client.readyState !== WebSocket.OPEN) {
@@ -21,15 +21,16 @@ export function createWsRelay(httpServer: Server, sseClient: SseClient): WebSock
     }
   };
 
-  sseClient.onBroadcast(broadcast);
+  manager.onBroadcast(broadcast);
 
   wss.on('connection', (ws) => {
     try {
       ws.send(JSON.stringify({
         event: 'connected',
         data: {
-          streamId: sseClient.getStreamId(),
-          sseState: sseClient.getState(),
+          streamId: manager.getPrimaryStreamId(),
+          sseState: manager.getPrimaryState(),
+          connections: manager.listConnections(),
         },
       }));
     } catch {
@@ -38,7 +39,7 @@ export function createWsRelay(httpServer: Server, sseClient: SseClient): WebSock
   });
 
   wss.on('close', () => {
-    sseClient.offBroadcast(broadcast);
+    manager.offBroadcast(broadcast);
   });
 
   return wss;

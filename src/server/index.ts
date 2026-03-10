@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { routeApi, sendJson } from '../api/router.js';
-import { runIndexer, SseClient } from '../indexer/index.js';
+import { runIndexer, ConnectionManager } from '../indexer/index.js';
 import { closeDb, getDb } from './db.js';
 import { ensureLocalAutoRow } from './schema.js';
 import { createWsRelay } from './ws.js';
@@ -18,8 +18,8 @@ function main(): void {
   ensureLocalAutoRow(db);
   runIndexer(db);
 
-  const sseClient = new SseClient(db);
-  sseClient.start();
+  const manager = new ConnectionManager(db);
+  manager.initialize();
 
   const server = createServer((req, res) => {
     void handleRequest(req, res, db).catch((error: unknown) => {
@@ -36,7 +36,7 @@ function main(): void {
       }
     });
   });
-  const wss = createWsRelay(server, sseClient);
+  const wss = createWsRelay(server, manager);
   let shuttingDown = false;
 
   server.listen(PORT, () => {
@@ -50,7 +50,7 @@ function main(): void {
 
     shuttingDown = true;
     process.stderr.write('[coral-reef] Shutting down...\n');
-    sseClient.stop();
+    manager.shutdown();
     wss.close();
     server.close(() => {
       closeDb();

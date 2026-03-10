@@ -1,30 +1,36 @@
 import type Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
-import { BACKEND_INFO_PATH } from 'coral/client';
-import { updateLocalAutoConnection } from '../server/schema.js';
-
-type BackendInfo = {
-  host: string;
-  port: number;
-  token: string;
-  instanceId: string;
-};
 
 type SsePayload = Record<string, unknown>;
-type BroadcastListener = (event: string, data: SsePayload) => void;
+type BroadcastListener = (event: string, data: SsePayload, source: string) => void;
 
 export type SseClientState = 'disconnected' | 'connecting' | 'connected';
 
+export type ResolvedConnection = {
+  host: string;
+  port: number;
+  token: string;
+};
+
+export type SseClientConfig = {
+  connectionId: string;
+  label: string;
+  resolveConnection: () => Promise<ResolvedConnection>;
+  onStatusChange: (status: SseClientState, lastError?: string) => void;
+  onReady: (streamId: string) => void;
+};
+
 export class SseClient {
   private readonly db: Database.Database;
+  private readonly config: SseClientConfig;
   private state: SseClientState = 'disconnected';
   private currentStreamId: string | null = null;
   private abortController: AbortController | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private wsListeners: BroadcastListener[] = [];
 
-  constructor(db: Database.Database) {
+  constructor(db: Database.Database, config: SseClientConfig) {
     this.db = db;
+    this.config = config;
   }
 
   start(): void {
@@ -69,34 +75,20 @@ export class SseClient {
       return;
     }
 
-    const info = readBackendInfo();
-    if (!info) {
-      updateLocalAutoConnection(this.db, { error: 'Backend not available' });
-      this.scheduleReconnect(5_000);
-      return;
-    }
-
-    updateLocalAutoConnection(this.db, { host: info.host, port: info.port, token: info.token });
     this.state = 'connecting';
+    this.config.onStatusChange('connecting');
 
-    const abortController = new AbortController();
-    this.abortController = abortController;
-
-    void this.consumeStream(info, abortController.signal)
+    void this.resolveAndConsume()
       .catch((error: unknown) => {
         if (isAbortError(error)) {
           return;
         }
 
         const message = error instanceof Error ? error.message : String(error);
-        updateLocalAutoConnection(this.db, { error: message });
-        process.stderr.write(`[sse] Stream error: ${message}\n`);
+        this.config.onStatusChange('disconnected', message);
+        process.stderr.write(`[sse:${this.config.connectionId}] Stream error: ${message}\n`);
       })
       .finally(() => {
-        if (this.abortController === abortController) {
-          this.abortController = null;
-        }
-
         if (this.state === 'disconnected') {
           this.currentStreamId = null;
           return;
@@ -104,11 +96,36 @@ export class SseClient {
 
         this.state = 'disconnected';
         this.currentStreamId = null;
+        this.config.onStatusChange('disconnected');
         this.scheduleReconnect(3_000);
       });
   }
 
-  private async consumeStream(info: BackendInfo, signal: AbortSignal): Promise<void> {
+  private async resolveAndConsume(): Promise<void> {
+    let resolved: ResolvedConnection;
+    try {
+      resolved = await this.config.resolveConnection();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.config.onStatusChange('disconnected', message);
+      this.state = 'disconnected';
+      this.scheduleReconnect(5_000);
+      return;
+    }
+
+    const abortController = new AbortController();
+    this.abortController = abortController;
+
+    try {
+      await this.consumeStream(resolved, abortController.signal);
+    } finally {
+      if (this.abortController === abortController) {
+        this.abortController = null;
+      }
+    }
+  }
+
+  private async consumeStream(info: ResolvedConnection, signal: AbortSignal): Promise<void> {
     const response = await fetch(`http://${info.host}:${info.port}/events/stream`, {
       method: 'GET',
       headers: {
@@ -175,12 +192,18 @@ export class SseClient {
     }
 
     switch (eventType) {
-      case 'ready':
-        this.currentStreamId = readString(payload, 'streamId');
+      case 'ready': {
+        const newStreamId = readString(payload, 'streamId');
+        this.currentStreamId = newStreamId;
         this.state = 'connected';
-        process.stderr.write(`[sse] Connected, streamId=${this.currentStreamId ?? 'unknown'}\n`);
+        this.config.onStatusChange('connected');
+        process.stderr.write(`[sse:${this.config.connectionId}] Connected, streamId=${newStreamId ?? 'unknown'}\n`);
+        if (newStreamId) {
+          this.config.onReady(newStreamId);
+        }
         this.broadcastToWs(eventType, payload);
         return;
+      }
 
       case 'job:created':
         this.upsertJob(payload);
@@ -215,14 +238,16 @@ export class SseClient {
   private upsertJob(payload: SsePayload): void {
     try {
       this.db.prepare(`
-        INSERT OR IGNORE INTO jobs (jobId, sessionId, provider, projectRoot, phase, createdAt)
-        VALUES (?, ?, ?, ?, 'launching', ?)
+        INSERT OR IGNORE INTO jobs (jobId, sessionId, provider, projectRoot, phase, createdAt, connectionId, originJobId)
+        VALUES (?, ?, ?, ?, 'launching', ?, ?, ?)
       `).run(
         readString(payload, 'jobId'),
         readString(payload, 'sessionId') ?? '',
         readString(payload, 'provider') ?? '',
         readString(payload, 'projectRoot') ?? '',
         new Date().toISOString(),
+        this.config.connectionId,
+        readString(payload, 'jobId'),
       );
     } catch {
       // Cold scan remains authoritative, so live inserts stay best-effort.
@@ -307,29 +332,11 @@ export class SseClient {
   private broadcastToWs(event: string, data: SsePayload): void {
     for (const listener of this.wsListeners) {
       try {
-        listener(event, data);
+        listener(event, data, this.config.connectionId);
       } catch {
         // Listener failures should not affect the SSE client.
       }
     }
-  }
-}
-
-function readBackendInfo(): BackendInfo | null {
-  try {
-    const raw = JSON.parse(readFileSync(BACKEND_INFO_PATH, 'utf-8')) as Record<string, unknown>;
-    if (typeof raw.port !== 'number' || typeof raw.token !== 'string') {
-      return null;
-    }
-
-    return {
-      host: typeof raw.host === 'string' ? raw.host : '127.0.0.1',
-      port: raw.port,
-      token: raw.token,
-      instanceId: typeof raw.instanceId === 'string' ? raw.instanceId : '',
-    };
-  } catch {
-    return null;
   }
 }
 
@@ -338,23 +345,23 @@ function readSseField(line: string, prefix: string): string {
   return value.startsWith(' ') ? value.slice(1) : value;
 }
 
-function readString(payload: SsePayload, key: string): string | null {
+function readString(payload: Record<string, unknown>, key: string): string | null {
   const value = payload[key];
   return typeof value === 'string' ? value : null;
 }
 
-function readNumber(payload: SsePayload, key: string): number | null {
+function readNumber(payload: Record<string, unknown>, key: string): number | null {
   const value = payload[key];
   return typeof value === 'number' ? value : null;
 }
 
-function readRecord(payload: SsePayload, key: string): SsePayload | null {
+function readRecord(payload: Record<string, unknown>, key: string): Record<string, unknown> | null {
   const value = payload[key];
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
 
-  return value as SsePayload;
+  return value as Record<string, unknown>;
 }
 
 function isAbortError(error: unknown): boolean {

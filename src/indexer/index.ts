@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { coldScan, type ColdScanResult } from './cold-scan.js';
+export { ConnectionManager } from './connection-manager.js';
 export { SseClient } from './sse-client.js';
 
 type IndexerStatus = {
