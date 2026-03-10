@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type Database from 'better-sqlite3';
+import type { ConnectionManager } from '../indexer/connection-manager.js';
 import { handleChat } from './chat.js';
+import { handleConnections } from './connections.js';
 import { handleDiscuss } from './discuss.js';
 import { handleHealth } from './health.js';
 import { handleJobs } from './jobs.js';
@@ -12,12 +14,13 @@ export async function routeApi(
   req: IncomingMessage,
   res: ServerResponse,
   db: Database.Database,
+  manager?: ConnectionManager,
 ): Promise<boolean> {
   const url = req.url ?? '';
 
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -25,6 +28,7 @@ export async function routeApi(
     return true;
   }
 
+  if (url.startsWith('/api/connections') && manager) return handleConnections(req, res, manager);
   if (url.startsWith('/api/jobs')) return handleJobs(req, res, db);
   if (url.startsWith('/api/sessions')) return handleSessions(req, res, db);
   if (url.startsWith('/api/discuss')) return handleDiscuss(req, res, db);

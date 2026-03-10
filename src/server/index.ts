@@ -22,7 +22,7 @@ function main(): void {
   manager.initialize();
 
   const server = createServer((req, res) => {
-    void handleRequest(req, res, db).catch((error: unknown) => {
+    void handleRequest(req, res, db, manager).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`[coral-reef] Request failed: ${message}\n`);
 
@@ -66,8 +66,9 @@ async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
   db: ReturnType<typeof getDb>,
+  manager: ConnectionManager,
 ): Promise<void> {
-  if (await routeApi(req, res, db)) {
+  if (await routeApi(req, res, db, manager)) {
     return;
   }
 
