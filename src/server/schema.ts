@@ -130,26 +130,28 @@ function migrateSchema(db: Database.Database): void {
   if (version >= CURRENT_VERSION) return;
 
   if (version < 1) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS connections (
-        id TEXT PRIMARY KEY,
-        label TEXT NOT NULL DEFAULT '',
-        source TEXT NOT NULL CHECK (source IN ('auto', 'manual')),
-        host TEXT,
-        port INTEGER,
-        token TEXT,
-        status TEXT NOT NULL DEFAULT 'disconnected',
-        lastError TEXT,
-        createdAt TEXT NOT NULL,
-        lastSeenAt TEXT
-      )
-    `);
-    db.exec(`ALTER TABLE jobs ADD COLUMN connectionId TEXT NOT NULL DEFAULT 'local:auto'`);
-    db.exec(`ALTER TABLE jobs ADD COLUMN originJobId TEXT`);
-    db.exec(`ALTER TABLE sessions ADD COLUMN connectionId TEXT NOT NULL DEFAULT 'local:auto'`);
-    db.exec(`ALTER TABLE sessions ADD COLUMN originSessionId TEXT`);
-    db.exec(`ALTER TABLE discuss_sessions ADD COLUMN connectionId TEXT NOT NULL DEFAULT 'local:auto'`);
-    db.exec(`ALTER TABLE discuss_sessions ADD COLUMN originDiscussSessionId TEXT`);
-    db.pragma('user_version = 1');
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS connections (
+          id TEXT PRIMARY KEY,
+          label TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL CHECK (source IN ('auto', 'manual')),
+          host TEXT,
+          port INTEGER,
+          token TEXT,
+          status TEXT NOT NULL DEFAULT 'disconnected',
+          lastError TEXT,
+          createdAt TEXT NOT NULL,
+          lastSeenAt TEXT
+        )
+      `);
+      db.exec(`ALTER TABLE jobs ADD COLUMN connectionId TEXT NOT NULL DEFAULT 'local:auto'`);
+      db.exec(`ALTER TABLE jobs ADD COLUMN originJobId TEXT`);
+      db.exec(`ALTER TABLE sessions ADD COLUMN connectionId TEXT NOT NULL DEFAULT 'local:auto'`);
+      db.exec(`ALTER TABLE sessions ADD COLUMN originSessionId TEXT`);
+      db.exec(`ALTER TABLE discuss_sessions ADD COLUMN connectionId TEXT NOT NULL DEFAULT 'local:auto'`);
+      db.exec(`ALTER TABLE discuss_sessions ADD COLUMN originDiscussSessionId TEXT`);
+      db.pragma('user_version = 1');
+    })();
   }
 }

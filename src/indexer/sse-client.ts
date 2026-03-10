@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { toReefId } from './source-ids.js';
 
 type SsePayload = Record<string, unknown>;
 type BroadcastListener = (event: string, data: SsePayload, source: string) => void;
@@ -236,18 +237,21 @@ export class SseClient {
   }
 
   private upsertJob(payload: SsePayload): void {
+    const originJobId = readString(payload, 'jobId') ?? '';
+    const reefJobId = toReefId(this.config.connectionId, originJobId);
+
     try {
       this.db.prepare(`
         INSERT OR IGNORE INTO jobs (jobId, sessionId, provider, projectRoot, phase, createdAt, connectionId, originJobId)
         VALUES (?, ?, ?, ?, 'launching', ?, ?, ?)
       `).run(
-        readString(payload, 'jobId'),
+        reefJobId,
         readString(payload, 'sessionId') ?? '',
         readString(payload, 'provider') ?? '',
         readString(payload, 'projectRoot') ?? '',
         new Date().toISOString(),
         this.config.connectionId,
-        readString(payload, 'jobId'),
+        originJobId,
       );
     } catch {
       // Cold scan remains authoritative, so live inserts stay best-effort.
@@ -255,10 +259,12 @@ export class SseClient {
   }
 
   private updateJobPhase(payload: SsePayload): void {
+    const reefJobId = toReefId(this.config.connectionId, readString(payload, 'jobId') ?? '');
+
     try {
       this.db.prepare('UPDATE jobs SET phase = ? WHERE jobId = ?').run(
         readString(payload, 'phase'),
-        readString(payload, 'jobId'),
+        reefJobId,
       );
     } catch {
       // Best-effort optimistic update.
@@ -266,7 +272,7 @@ export class SseClient {
   }
 
   private insertProgressEvent(payload: SsePayload): void {
-    const jobId = readString(payload, 'jobId');
+    const reefJobId = toReefId(this.config.connectionId, readString(payload, 'jobId') ?? '');
     const eventId = readNumber(payload, 'eventId');
 
     try {
@@ -279,12 +285,12 @@ export class SseClient {
           WHERE jobId = ? AND eventId = ?
         )
       `).run(
-        jobId,
+        reefJobId,
         eventId,
         new Date().toISOString(),
         readString(payload, 'message') ?? '',
         JSON.stringify(payload),
-        jobId,
+        reefJobId,
         eventId,
       );
     } catch {
@@ -293,6 +299,7 @@ export class SseClient {
   }
 
   private updateJobCompleted(payload: SsePayload): void {
+    const reefJobId = toReefId(this.config.connectionId, readString(payload, 'jobId') ?? '');
     const result = readRecord(payload, 'result');
     const usage = result ? readRecord(result, 'usage') : null;
     const phase = result?.aborted === true ? 'aborted' : 'completed';
@@ -310,7 +317,7 @@ export class SseClient {
         usage ? readNumber(usage, 'inputTokens') : null,
         usage ? readNumber(usage, 'outputTokens') : null,
         result ? readNumber(result, 'durationMs') : null,
-        readString(payload, 'jobId'),
+        reefJobId,
       );
     } catch {
       // Best-effort optimistic update.

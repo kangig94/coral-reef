@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { BACKEND_INFO_PATH } from 'coral/client';
 import { SseClient, type SseClientState, type ResolvedConnection } from './sse-client.js';
@@ -64,7 +65,7 @@ export class ConnectionManager {
     }
   }
 
-  listConnections(): Array<Omit<ConnectionRow, 'token'>> {
+  listConnections(): Array<Omit<ConnectionRow, 'token'> & { sseState: SseClientState }> {
     const rows = this.db.prepare('SELECT * FROM connections ORDER BY createdAt ASC').all() as ConnectionRow[];
     return rows.map(({ token: _token, ...rest }) => ({
       ...rest,
@@ -294,10 +295,5 @@ export class ConnectionManager {
 }
 
 function randomId(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < 12; i++) {
-    result += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return result;
+  return randomBytes(9).toString('base64url');
 }

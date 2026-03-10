@@ -71,7 +71,7 @@ export async function handleHealth(
       id: conn.id,
       label: conn.label,
       host: conn.host,
-      sseState: (conn as Record<string, unknown>).sseState ?? 'disconnected',
+      sseState: conn.sseState,
       status: conn.status,
     }));
   }
