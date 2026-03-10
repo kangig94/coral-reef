@@ -61,9 +61,10 @@ function scanJobs(db: Database.Database): number {
   const insertJob = db.prepare(`
     INSERT OR REPLACE INTO jobs (
       jobId, sessionId, provider, projectRoot, phase, launchState, createdAt,
-      completedAt, result, jobKind, costUsd, inputTokens, outputTokens, durationMs
+      completedAt, result, jobKind, costUsd, inputTokens, outputTokens, durationMs,
+      connectionId, originJobId
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const deleteEvents = db.prepare('DELETE FROM events WHERE jobId = ?');
@@ -96,6 +97,8 @@ function scanJobs(db: Database.Database): number {
       normalized.inputTokens,
       normalized.outputTokens,
       normalized.durationMs,
+      'local:auto',
+      jobId,
     );
 
     deleteEvents.run(jobId);
@@ -129,9 +132,10 @@ function scanSessions(db: Database.Database): number {
   const insertSession = db.prepare(`
     INSERT OR REPLACE INTO sessions (
       sessionId, provider, name, state, model, cwd, projectRoot, shardHash,
-      provenanceState, createdAt, lastUsedAt, version, activeJobId, lastJobId
+      provenanceState, createdAt, lastUsedAt, version, activeJobId, lastJobId,
+      connectionId, originSessionId
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   let count = 0;
@@ -166,6 +170,8 @@ function scanSessions(db: Database.Database): number {
           entry.version ?? 0,
           entry.activeJobId ?? null,
           entry.lastJobId ?? null,
+          'local:auto',
+          entry.sessionId,
         );
         count += 1;
       }
@@ -185,9 +191,10 @@ function scanDiscussSessions(db: Database.Database): number {
 
   const insertDiscuss = db.prepare(`
     INSERT OR REPLACE INTO discuss_sessions (
-      sessionId, topic, projectRoot, status, sessionDir, createdAt, lastActivityAt, stateJson
+      sessionId, topic, projectRoot, status, sessionDir, createdAt, lastActivityAt, stateJson,
+      connectionId, originDiscussSessionId
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const deleteTranscript = db.prepare('DELETE FROM transcript_entries WHERE discussSessionId = ?');
@@ -215,6 +222,8 @@ function scanDiscussSessions(db: Database.Database): number {
           state?.created_at ?? session.createdAt,
           state?.last_activity_at ?? null,
           state ? JSON.stringify(state) : null,
+          'local:auto',
+          session.sessionId,
         );
 
         deleteTranscript.run(session.sessionId);

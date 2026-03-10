@@ -1,5 +1,10 @@
 import Database from 'better-sqlite3';
 
+// Schema version history:
+//   0 — original schema (no connections, no source-aware columns)
+//   1 — connections table + connectionId/originId columns on jobs/sessions/discuss_sessions
+const CURRENT_VERSION = 1;
+
 export function initSchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS jobs (
@@ -91,4 +96,35 @@ export function initSchema(db: Database.Database): void {
       content_type
     );
   `);
+
+  migrateSchema(db);
+}
+
+function migrateSchema(db: Database.Database): void {
+  const version = db.pragma('user_version', { simple: true }) as number;
+  if (version >= CURRENT_VERSION) return;
+
+  if (version < 1) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS connections (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL CHECK (source IN ('auto', 'manual')),
+        host TEXT,
+        port INTEGER,
+        token TEXT,
+        status TEXT NOT NULL DEFAULT 'disconnected',
+        lastError TEXT,
+        createdAt TEXT NOT NULL,
+        lastSeenAt TEXT
+      )
+    `);
+    db.exec(`ALTER TABLE jobs ADD COLUMN connectionId TEXT NOT NULL DEFAULT 'local:auto'`);
+    db.exec(`ALTER TABLE jobs ADD COLUMN originJobId TEXT`);
+    db.exec(`ALTER TABLE sessions ADD COLUMN connectionId TEXT NOT NULL DEFAULT 'local:auto'`);
+    db.exec(`ALTER TABLE sessions ADD COLUMN originSessionId TEXT`);
+    db.exec(`ALTER TABLE discuss_sessions ADD COLUMN connectionId TEXT NOT NULL DEFAULT 'local:auto'`);
+    db.exec(`ALTER TABLE discuss_sessions ADD COLUMN originDiscussSessionId TEXT`);
+    db.pragma('user_version = 1');
+  }
 }
