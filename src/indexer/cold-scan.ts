@@ -4,15 +4,16 @@ import { basename, join } from 'node:path';
 import {
   JOBS_DIR,
   SESSION_BASE,
+  buildDiscussDetail,
   discussBaseDir,
   readDiscussDiscovery,
-  readDiscussState,
+  readDiscussSnapshot,
   readProgressLog,
   readSessionEntryLenient,
   readStatusRecord,
   syncHomePaths,
-  type DiscussState,
 } from 'coral/client';
+import { upsertDiscussDetail } from './discuss-index.js';
 
 const SESSION_DIR_PATTERN = /^((?:\d{8}-\d{6}|\d{6}-\d{4})-[a-z0-9]+)-(.+)$/;
 
@@ -27,17 +28,6 @@ type DiscoveredDiscussSession = {
   topic: string;
   sessionDir: string;
   createdAt: string | null;
-};
-
-type TranscriptRow = {
-  seq: number;
-  kind: string;
-  agent: string | null;
-  content: string | null;
-  epoch: number | null;
-  round: number | null;
-  ts: string | null;
-  payload: string;
 };
 
 export function coldScan(db: Database.Database): ColdScanResult {
@@ -189,57 +179,26 @@ function scanDiscussSessions(db: Database.Database): number {
     WHERE projectRoot IS NOT NULL AND projectRoot != ''
   `).all() as Array<{ projectRoot: string }>;
 
-  const insertDiscuss = db.prepare(`
-    INSERT OR REPLACE INTO discuss_sessions (
-      sessionId, topic, projectRoot, status, sessionDir, createdAt, lastActivityAt, stateJson,
-      connectionId, originDiscussSessionId
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const deleteTranscript = db.prepare('DELETE FROM transcript_entries WHERE discussSessionId = ?');
-  const insertTranscript = db.prepare(`
-    INSERT INTO transcript_entries (
-      discussSessionId, seq, kind, agent, content, epoch, round, ts, payload
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
   let count = 0;
   const transaction = db.transaction((): void => {
     for (const row of projectRoots) {
       const sessions = discoverDiscussSessions(row.projectRoot);
       for (const session of sessions) {
-        const statePath = join(session.sessionDir, 'state.json');
-        const state = readDiscussState(statePath);
-
-        insertDiscuss.run(
-          session.sessionId,
-          state?.topic ?? session.topic,
-          row.projectRoot,
-          state?.status ?? 'unknown',
-          session.sessionDir,
-          state?.created_at ?? session.createdAt,
-          state?.last_activity_at ?? null,
-          state ? JSON.stringify(state) : null,
-          'local:auto',
-          session.sessionId,
-        );
-
-        deleteTranscript.run(session.sessionId);
-        for (const entry of buildTranscriptRows(state)) {
-          insertTranscript.run(
-            session.sessionId,
-            entry.seq,
-            entry.kind,
-            entry.agent,
-            entry.content,
-            entry.epoch,
-            entry.round,
-            entry.ts,
-            entry.payload,
-          );
+        const snapshot = readDiscussSnapshot(join(session.sessionDir, 'state.json'));
+        if (!snapshot) {
+          continue;
         }
+
+        const detail = snapshot.state.status === 'ended'
+          ? buildDiscussDetail(snapshot, 'audit', 'persisted')
+          : buildDiscussDetail(snapshot, 'control', 'persisted');
+
+        upsertDiscussDetail(db, detail, {
+          connectionId: 'local:auto',
+          projectRoot: snapshot.projectRoot,
+          originDiscussSessionId: snapshot.sessionId,
+          sessionDir: session.sessionDir,
+        });
 
         count += 1;
       }
@@ -288,64 +247,6 @@ function discoverDiscussSessions(projectRoot: string): DiscoveredDiscussSession[
 
   return sessions;
 }
-
-function buildTranscriptRows(state: DiscussState | null): TranscriptRow[] {
-  if (!state) {
-    return [];
-  }
-
-  return state.transcript.map((entry, index): TranscriptRow => {
-    const payload = JSON.stringify(entry);
-
-    switch (entry.type) {
-      case 'speech':
-        return {
-          seq: index + 1,
-          kind: entry.type,
-          agent: entry.agent,
-          content: entry.content,
-          epoch: entry.epoch,
-          round: entry.step,
-          ts: entry.ts,
-          payload,
-        };
-      case 'epoch_summary':
-        return {
-          seq: index + 1,
-          kind: entry.type,
-          agent: null,
-          content: entry.summary,
-          epoch: entry.epoch,
-          round: null,
-          ts: entry.ts,
-          payload,
-        };
-      case 'session_event':
-        return {
-          seq: index + 1,
-          kind: entry.type,
-          agent: null,
-          content: entry.detail,
-          epoch: entry.epoch,
-          round: null,
-          ts: entry.ts,
-          payload,
-        };
-      case 'bids':
-        return {
-          seq: index + 1,
-          kind: entry.type,
-          agent: entry.winner,
-          content: null,
-          epoch: entry.epoch,
-          round: entry.step,
-          ts: entry.ts,
-          payload,
-        };
-    }
-  });
-}
-
 function isTerminalPhase(phase: string): boolean {
   return phase === 'completed' || phase === 'error' || phase === 'aborted';
 }

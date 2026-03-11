@@ -227,6 +227,7 @@ export class SseClient {
         return;
 
       case 'session:updated':
+      case 'discuss:updated':
         this.broadcastToWs(eventType, payload);
         return;
 

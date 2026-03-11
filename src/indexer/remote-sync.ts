@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
-import { toReefId, toDiscussReefId } from './source-ids.js';
+import type { DiscussDetailResponse } from 'coral/client';
+import { upsertDiscussDetail, type UpsertDiscussResult } from './discuss-index.js';
+import { toReefId } from './source-ids.js';
 
 export type SyncConfig = {
   connectionId: string;
@@ -9,38 +11,35 @@ export type SyncConfig = {
   signal?: AbortSignal;
 };
 
+export type DiscussSyncParams = {
+  projectRoot: string;
+  originDiscussSessionId: string;
+  status: string;
+};
+
 export async function remoteSync(db: Database.Database, config: SyncConfig): Promise<void> {
   const { connectionId, host, port, token, signal } = config;
   const baseUrl = `http://${host}:${port}`;
   const headers: Record<string, string> = { 'X-Coral-Backend-Token': token };
 
   const [jobsRes, sessionsRes, discussRes] = await Promise.all([
-    safeFetch(`${baseUrl}/api/jobs`, headers, signal),
-    safeFetch(`${baseUrl}/api/sessions`, headers, signal),
-    safeFetch(`${baseUrl}/api/discuss`, headers, signal),
+    safeFetch<{ jobs: Array<Record<string, unknown>> }>(`${baseUrl}/api/jobs`, headers, signal),
+    safeFetch<{ sessions: Array<Record<string, unknown>> }>(`${baseUrl}/api/sessions`, headers, signal),
+    safeFetch<{ sessions: Array<Record<string, unknown>> }>(`${baseUrl}/api/discuss`, headers, signal),
   ]);
 
   if (signal?.aborted) return;
 
-  if (jobsRes) {
-    const { jobs } = jobsRes as { jobs: Array<Record<string, unknown>> };
-    if (Array.isArray(jobs)) {
-      syncJobs(db, connectionId, jobs);
-    }
+  if (jobsRes && Array.isArray(jobsRes.jobs)) {
+    syncJobs(db, connectionId, jobsRes.jobs);
   }
 
-  if (sessionsRes) {
-    const { sessions } = sessionsRes as { sessions: Array<Record<string, unknown>> };
-    if (Array.isArray(sessions)) {
-      syncSessions(db, connectionId, sessions);
-    }
+  if (sessionsRes && Array.isArray(sessionsRes.sessions)) {
+    syncSessions(db, connectionId, sessionsRes.sessions);
   }
 
-  if (discussRes) {
-    const { sessions: discussSessions } = discussRes as { sessions: Array<Record<string, unknown>> };
-    if (Array.isArray(discussSessions)) {
-      await syncDiscussSessions(db, connectionId, baseUrl, headers, discussSessions, signal);
-    }
+  if (discussRes && Array.isArray(discussRes.sessions)) {
+    await syncDiscussSessions(db, config, discussRes.sessions);
   }
 }
 
@@ -134,95 +133,96 @@ function syncSessions(db: Database.Database, connectionId: string, sessions: Arr
 
 async function syncDiscussSessions(
   db: Database.Database,
-  connectionId: string,
-  baseUrl: string,
-  headers: Record<string, string>,
+  config: SyncConfig,
   sessions: Array<Record<string, unknown>>,
-  signal?: AbortSignal,
 ): Promise<void> {
-  const insertDiscuss = db.prepare(`
-    INSERT OR REPLACE INTO discuss_sessions (
-      sessionId, topic, projectRoot, status, sessionDir, createdAt, lastActivityAt, stateJson,
-      connectionId, originDiscussSessionId
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const deleteTranscript = db.prepare('DELETE FROM transcript_entries WHERE discussSessionId = ?');
-  const insertTranscript = db.prepare(`
-    INSERT INTO transcript_entries (
-      discussSessionId, seq, kind, agent, content, epoch, round, ts, payload
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
   for (const session of sessions) {
-    if (signal?.aborted) return;
+    if (config.signal?.aborted) return;
 
-    const originId = str(session, 'sessionId') ?? '';
-    const projectRoot = str(session, 'projectRoot') ?? '';
-    const reefId = toDiscussReefId({ connectionId, projectRoot, originDiscussSessionId: originId });
-
-    const detailUrl = `${baseUrl}/api/discuss/detail?projectRoot=${encodeURIComponent(projectRoot)}&sessionId=${encodeURIComponent(originId)}`;
-    const detail = await safeFetch(detailUrl, headers, signal) as {
-      session?: Record<string, unknown>;
-      transcript?: Array<Record<string, unknown>>;
-    } | null;
-
-    const detailSession = detail?.session;
-    const transcript = detail?.transcript;
-
-    const transaction = db.transaction((): void => {
-      insertDiscuss.run(
-        reefId,
-        str(detailSession ?? session, 'topic') ?? str(session, 'topic') ?? '',
-        projectRoot,
-        str(detailSession ?? session, 'status') ?? 'unknown',
-        str(detailSession ?? session, 'sessionDir') ?? '',
-        str(detailSession ?? session, 'createdAt') ?? str(session, 'createdAt') ?? null,
-        str(detailSession ?? session, 'lastActivityAt') ?? null,
-        detailSession ? JSON.stringify(detailSession) : null,
-        connectionId,
-        originId,
-      );
-
-      if (transcript && Array.isArray(transcript)) {
-        deleteTranscript.run(reefId);
-        for (let i = 0; i < transcript.length; i++) {
-          const entry = transcript[i];
-          insertTranscript.run(
-            reefId,
-            i + 1,
-            str(entry, 'type') ?? str(entry, 'kind') ?? 'unknown',
-            str(entry, 'agent') ?? null,
-            str(entry, 'content') ?? str(entry, 'summary') ?? str(entry, 'detail') ?? null,
-            typeof entry.epoch === 'number' ? entry.epoch : null,
-            typeof entry.step === 'number' ? entry.step : (typeof entry.round === 'number' ? entry.round : null),
-            str(entry, 'ts') ?? null,
-            JSON.stringify(entry),
-          );
-        }
-      }
-    });
+    const projectRoot = str(session, 'projectRoot');
+    const originDiscussSessionId = str(session, 'sessionId');
+    if (!projectRoot || !originDiscussSessionId) {
+      continue;
+    }
 
     try {
-      transaction();
+      await syncDiscussSession(db, config, {
+        projectRoot,
+        originDiscussSessionId,
+        status: str(session, 'status') ?? 'unknown',
+      });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`[sync:${connectionId}] Discuss session ${originId} sync failed: ${message}\n`);
+      process.stderr.write(`[sync:${config.connectionId}] Discuss session ${originDiscussSessionId} sync failed: ${message}\n`);
     }
   }
 }
 
-async function safeFetch(
+export async function syncDiscussSession(
+  db: Database.Database,
+  config: SyncConfig,
+  params: DiscussSyncParams,
+): Promise<UpsertDiscussResult | null> {
+  const detail = await fetchDiscussDetail(config, params);
+  if (!detail) {
+    return null;
+  }
+
+  return upsertDiscussDetail(db, detail, {
+    connectionId: config.connectionId,
+    projectRoot: params.projectRoot,
+    originDiscussSessionId: params.originDiscussSessionId,
+  });
+}
+
+async function fetchDiscussDetail(
+  config: SyncConfig,
+  params: DiscussSyncParams,
+): Promise<DiscussDetailResponse | null> {
+  const { host, port, token, signal } = config;
+  const baseUrl = `http://${host}:${port}`;
+  const headers: Record<string, string> = { 'X-Coral-Backend-Token': token };
+  const preferredView = params.status === 'ended' ? 'audit' : 'control';
+
+  const detail = await safeFetch<DiscussDetailResponse>(
+    buildDiscussDetailUrl(baseUrl, params.projectRoot, params.originDiscussSessionId, preferredView),
+    headers,
+    signal,
+  );
+
+  if (!detail) {
+    return null;
+  }
+
+  if (preferredView === 'control' && detail.session.status === 'ended') {
+    return await safeFetch<DiscussDetailResponse>(
+      buildDiscussDetailUrl(baseUrl, params.projectRoot, params.originDiscussSessionId, 'audit'),
+      headers,
+      signal,
+    ) ?? detail;
+  }
+
+  return detail;
+}
+
+function buildDiscussDetailUrl(
+  baseUrl: string,
+  projectRoot: string,
+  sessionId: string,
+  view: 'control' | 'audit',
+): string {
+  return `${baseUrl}/api/discuss/detail?projectRoot=${encodeURIComponent(projectRoot)}&sessionId=${encodeURIComponent(sessionId)}&view=${view}`;
+}
+
+async function safeFetch<T>(
   url: string,
   headers: Record<string, string>,
   signal?: AbortSignal,
-): Promise<unknown> {
+): Promise<T | null> {
   try {
     const response = await fetch(url, { method: 'GET', headers, signal });
     if (!response.ok) return null;
-    return await response.json();
+    return await response.json() as T;
   } catch {
     return null;
   }

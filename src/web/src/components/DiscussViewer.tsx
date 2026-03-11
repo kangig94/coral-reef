@@ -50,7 +50,7 @@ export function DiscussViewer() {
     wsClient.connect();
 
     const unsubscribe = wsClient.subscribe((event) => {
-      if (event === 'connected' || event === 'ready' || event === 'discuss:event') {
+      if (event === 'connected' || event === 'ready' || event === 'discuss:synced') {
         void loadSessions();
       }
     });
@@ -89,8 +89,13 @@ export function DiscussViewer() {
 
     void loadTranscript();
 
-    const unsubscribe = wsClient.subscribe((event) => {
-      if (event === 'discuss:event' || event === 'ready' || event === 'connected') {
+    const unsubscribe = wsClient.subscribe((event, data) => {
+      if (event === 'ready' || event === 'connected') {
+        void loadTranscript();
+        return;
+      }
+
+      if (event === 'discuss:synced' && data.sessionId === sessionId) {
         void loadTranscript();
       }
     });

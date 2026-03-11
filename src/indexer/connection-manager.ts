@@ -3,7 +3,10 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { BACKEND_INFO_PATH } from 'coral/client';
 import { SseClient, type SseClientState, type ResolvedConnection } from './sse-client.js';
-import { remoteSync } from './remote-sync.js';
+import { remoteSync, syncDiscussSession } from './remote-sync.js';
+import { toDiscussReefId } from './source-ids.js';
+
+const DISCUSS_REFRESH_DEBOUNCE_MS = 150;
 
 type ConnectionRow = {
   id: string;
@@ -23,9 +26,24 @@ type ConnectionRuntime = {
   generation: number;
   lastStreamId: string | null;
   syncAbort: AbortController | null;
+  discussRefreshes: Map<string, PendingDiscussRefresh>;
 };
 
 type BroadcastListener = (event: string, data: Record<string, unknown>, source: string) => void;
+
+type DiscussRefreshPayload = {
+  projectRoot: string;
+  originDiscussSessionId: string;
+  status: string;
+};
+
+type PendingDiscussRefresh = {
+  timer: NodeJS.Timeout | null;
+  inFlight: boolean;
+  dirty: boolean;
+  latest: DiscussRefreshPayload;
+  abortController: AbortController | null;
+};
 
 export class ConnectionManager {
   private readonly db: Database.Database;
@@ -95,9 +113,7 @@ export class ConnectionManager {
 
     const runtime = this.runtimes.get(id);
     if (runtime) {
-      runtime.generation += 1;
-      runtime.syncAbort?.abort();
-      runtime.sseClient.stop();
+      this.stopRuntime(runtime);
       this.runtimes.delete(id);
     }
 
@@ -109,8 +125,7 @@ export class ConnectionManager {
 
   shutdown(): void {
     for (const [id, runtime] of this.runtimes) {
-      runtime.syncAbort?.abort();
-      runtime.sseClient.stop();
+      this.stopRuntime(runtime);
       this.runtimes.delete(id);
     }
   }
@@ -126,6 +141,7 @@ export class ConnectionManager {
       generation: 0,
       lastStreamId: null,
       syncAbort: null,
+      discussRefreshes: new Map(),
     };
 
     const sseClient = new SseClient(this.db, {
@@ -141,13 +157,12 @@ export class ConnectionManager {
     });
 
     sseClient.onBroadcast((event, data, source) => {
-      for (const listener of this.wsListeners) {
-        try {
-          listener(event, data, source);
-        } catch {
-          // Broadcast failures should not affect the manager.
-        }
+      if (event === 'discuss:updated') {
+        this.handleDiscussUpdated(connectionId, data);
+        return;
       }
+
+      this.broadcast(event, data, source);
     });
 
     runtime.sseClient = sseClient;
@@ -186,17 +201,12 @@ export class ConnectionManager {
   }
 
   private async resolveManual(connectionId: string): Promise<ResolvedConnection> {
-    const row = this.db.prepare('SELECT host, port, token FROM connections WHERE id = ?').get(connectionId) as {
-      host: string | null;
-      port: number | null;
-      token: string | null;
-    } | undefined;
-
-    if (!row?.host || !row.port || !row.token) {
+    const resolved = this.readConnectionCredentials(connectionId);
+    if (!resolved) {
       throw new Error('Missing connection credentials');
     }
 
-    return { host: row.host, port: row.port, token: row.token };
+    return resolved;
   }
 
   private updateConnectionStatus(connectionId: string, status: SseClientState, lastError?: string): void {
@@ -236,19 +246,14 @@ export class ConnectionManager {
     const abortController = new AbortController();
     runtime.syncAbort = abortController;
 
-    const row = this.db.prepare('SELECT host, port, token FROM connections WHERE id = ?').get(connectionId) as {
-      host: string | null;
-      port: number | null;
-      token: string | null;
-    } | undefined;
-
-    if (!row?.host || !row.port || !row.token) return;
+    const resolved = this.readConnectionCredentials(connectionId);
+    if (!resolved) return;
 
     void remoteSync(this.db, {
       connectionId,
-      host: row.host,
-      port: row.port,
-      token: row.token,
+      host: resolved.host,
+      port: resolved.port,
+      token: resolved.token,
       signal: abortController.signal,
     })
       .then(() => {
@@ -267,6 +272,189 @@ export class ConnectionManager {
           runtime.syncAbort = null;
         }
       });
+  }
+
+  private handleDiscussUpdated(connectionId: string, data: Record<string, unknown>): void {
+    const projectRoot = readString(data, 'projectRoot');
+    const originDiscussSessionId = readString(data, 'sessionId');
+
+    if (!projectRoot || !originDiscussSessionId) {
+      return;
+    }
+
+    this.scheduleDiscussRefresh(connectionId, {
+      projectRoot,
+      originDiscussSessionId,
+      status: readString(data, 'status') ?? 'unknown',
+    });
+  }
+
+  private scheduleDiscussRefresh(connectionId: string, payload: DiscussRefreshPayload): void {
+    const runtime = this.runtimes.get(connectionId);
+    if (!runtime) {
+      return;
+    }
+
+    const reefSessionId = toDiscussReefId({
+      connectionId,
+      projectRoot: payload.projectRoot,
+      originDiscussSessionId: payload.originDiscussSessionId,
+    });
+
+    let refresh = runtime.discussRefreshes.get(reefSessionId);
+    if (!refresh) {
+      refresh = {
+        timer: null,
+        inFlight: false,
+        dirty: false,
+        latest: payload,
+        abortController: null,
+      };
+      runtime.discussRefreshes.set(reefSessionId, refresh);
+    }
+
+    refresh.latest = payload;
+
+    if (refresh.timer) {
+      clearTimeout(refresh.timer);
+      refresh.timer = null;
+    }
+
+    if (refresh.inFlight) {
+      refresh.dirty = true;
+      return;
+    }
+
+    this.armDiscussRefresh(connectionId, runtime, reefSessionId, refresh);
+  }
+
+  private armDiscussRefresh(
+    connectionId: string,
+    runtime: ConnectionRuntime,
+    reefSessionId: string,
+    refresh: PendingDiscussRefresh,
+  ): void {
+    refresh.timer = setTimeout(() => {
+      refresh.timer = null;
+      void this.runDiscussRefresh(connectionId, runtime, reefSessionId, refresh);
+    }, DISCUSS_REFRESH_DEBOUNCE_MS);
+  }
+
+  private async runDiscussRefresh(
+    connectionId: string,
+    runtime: ConnectionRuntime,
+    reefSessionId: string,
+    refresh: PendingDiscussRefresh,
+  ): Promise<void> {
+    const resolved = this.readConnectionCredentials(connectionId);
+    if (!resolved) {
+      runtime.discussRefreshes.delete(reefSessionId);
+      return;
+    }
+
+    const generation = runtime.generation;
+    const payload = refresh.latest;
+    const abortController = new AbortController();
+    refresh.inFlight = true;
+    refresh.dirty = false;
+    refresh.abortController = abortController;
+
+    try {
+      const result = await syncDiscussSession(this.db, {
+        connectionId,
+        host: resolved.host,
+        port: resolved.port,
+        token: resolved.token,
+        signal: abortController.signal,
+      }, payload);
+
+      if (!result) {
+        return;
+      }
+
+      if (runtime.generation !== generation || this.runtimes.get(connectionId) !== runtime) {
+        return;
+      }
+
+      this.broadcast('discuss:synced', {
+        sessionId: result.sessionId,
+        originDiscussSessionId: result.originDiscussSessionId,
+        lastSeq: result.lastSeq,
+        projectRoot: payload.projectRoot,
+        status: result.status,
+      }, connectionId);
+    } catch (error: unknown) {
+      if (runtime.generation !== generation) {
+        return;
+      }
+      if (error instanceof Error && error.name === 'AbortError') {
+        return;
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[manager:${connectionId}] Discuss refresh failed for ${payload.originDiscussSessionId}: ${message}\n`);
+    } finally {
+      if (refresh.abortController === abortController) {
+        refresh.abortController = null;
+      }
+      refresh.inFlight = false;
+
+      if (runtime.generation !== generation || this.runtimes.get(connectionId) !== runtime) {
+        runtime.discussRefreshes.delete(reefSessionId);
+        return;
+      }
+
+      if (refresh.dirty) {
+        this.armDiscussRefresh(connectionId, runtime, reefSessionId, refresh);
+        return;
+      }
+
+      if (!refresh.timer) {
+        runtime.discussRefreshes.delete(reefSessionId);
+      }
+    }
+  }
+
+  private readConnectionCredentials(connectionId: string): ResolvedConnection | null {
+    const row = this.db.prepare('SELECT host, port, token FROM connections WHERE id = ?').get(connectionId) as {
+      host: string | null;
+      port: number | null;
+      token: string | null;
+    } | undefined;
+
+    if (!row?.host || !row.port || !row.token) {
+      return null;
+    }
+
+    return { host: row.host, port: row.port, token: row.token };
+  }
+
+  private broadcast(event: string, data: Record<string, unknown>, source: string): void {
+    for (const listener of this.wsListeners) {
+      try {
+        listener(event, data, source);
+      } catch {
+        // Broadcast failures should not affect the manager.
+      }
+    }
+  }
+
+  private stopRuntime(runtime: ConnectionRuntime): void {
+    runtime.generation += 1;
+    runtime.syncAbort?.abort();
+    runtime.syncAbort = null;
+
+    for (const refresh of runtime.discussRefreshes.values()) {
+      if (refresh.timer) {
+        clearTimeout(refresh.timer);
+        refresh.timer = null;
+      }
+      refresh.abortController?.abort();
+      refresh.abortController = null;
+    }
+    runtime.discussRefreshes.clear();
+
+    runtime.sseClient.stop();
   }
 
   private purgeConnectionData(connectionId: string): void {
@@ -296,4 +484,9 @@ export class ConnectionManager {
 
 function randomId(): string {
   return randomBytes(9).toString('base64url');
+}
+
+function readString(value: Record<string, unknown>, key: string): string | null {
+  const candidate = value[key];
+  return typeof candidate === 'string' ? candidate : null;
 }
