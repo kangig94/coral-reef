@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { BACKEND_INFO_PATH } from 'coral/client';
+import { LOCAL_BACKEND_INFO_PATH } from '../coral-paths.js';
 import { SseClient, type SseClientState, type ResolvedConnection } from './sse-client.js';
 import { remoteSync, syncDiscussSession } from './remote-sync.js';
 import { toDiscussReefId } from './source-ids.js';
@@ -172,7 +172,7 @@ export class ConnectionManager {
 
   private async resolveLocalAuto(): Promise<ResolvedConnection> {
     try {
-      const raw = JSON.parse(readFileSync(BACKEND_INFO_PATH, 'utf-8')) as Record<string, unknown>;
+      const raw = JSON.parse(readFileSync(LOCAL_BACKEND_INFO_PATH, 'utf-8')) as Record<string, unknown>;
       if (typeof raw.port !== 'number' || typeof raw.token !== 'string') {
         throw new Error('Invalid backend.json');
       }

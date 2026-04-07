@@ -17,6 +17,28 @@ export type DiscussSyncParams = {
   status: string;
 };
 
+type RemoteSessionProvenanceState = 'authoritative' | 'legacy_unresolved';
+
+type RemoteSessionEntry = {
+  sessionId: string;
+  provider?: string;
+  name?: string;
+  agentName?: string;
+  state?: string;
+  activeJobId?: string;
+  lastJobId?: string;
+  conversationRef?: string;
+  providerContinuity?: Record<string, unknown>;
+  model?: string;
+  cwd?: string;
+  projectRoot?: string;
+  backendNamespace?: string;
+  createdAt?: string;
+  lastUsedAt?: string;
+  version?: number;
+  provenanceState: RemoteSessionProvenanceState;
+};
+
 export async function remoteSync(db: Database.Database, config: SyncConfig): Promise<void> {
   const { connectionId, host, port, token, signal } = config;
   const baseUrl = `http://${host}:${port}`;
@@ -24,7 +46,7 @@ export async function remoteSync(db: Database.Database, config: SyncConfig): Pro
 
   const [jobsRes, sessionsRes, discussRes] = await Promise.all([
     safeFetch<{ jobs: Array<Record<string, unknown>> }>(`${baseUrl}/api/jobs`, headers, signal),
-    safeFetch<{ sessions: Array<Record<string, unknown>> }>(`${baseUrl}/api/sessions`, headers, signal),
+    safeFetch<{ sessions: RemoteSessionEntry[] }>(`${baseUrl}/sessions`, headers, signal),
     safeFetch<{ sessions: Array<Record<string, unknown>> }>(`${baseUrl}/api/discuss`, headers, signal),
   ]);
 
@@ -87,36 +109,43 @@ function syncJobs(db: Database.Database, connectionId: string, jobs: Array<Recor
   }
 }
 
-function syncSessions(db: Database.Database, connectionId: string, sessions: Array<Record<string, unknown>>): void {
+function syncSessions(db: Database.Database, connectionId: string, sessions: RemoteSessionEntry[]): void {
   const insert = db.prepare(`
     INSERT OR REPLACE INTO sessions (
-      sessionId, provider, name, state, model, cwd, projectRoot, shardHash,
-      provenanceState, createdAt, lastUsedAt, version, activeJobId, lastJobId,
+      sessionId, provider, name, agentName, state, activeJobId, lastJobId, conversationRef,
+      providerContinuity, model, cwd, projectRoot, backendNamespace, provenanceState,
+      createdAt, lastUsedAt, version,
       connectionId, originSessionId
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const transaction = db.transaction((): void => {
     for (const session of sessions) {
-      const originSessionId = str(session, 'sessionId') ?? '';
+      const originSessionId = session.sessionId;
+      if (originSessionId.length === 0) {
+        continue;
+      }
       const reefSessionId = toReefId(connectionId, originSessionId);
 
       insert.run(
         reefSessionId,
-        str(session, 'provider') ?? 'unknown',
-        str(session, 'name') ?? '',
-        str(session, 'state') ?? 'pending',
-        str(session, 'model') ?? 'unknown',
-        str(session, 'cwd') ?? '',
-        str(session, 'projectRoot') ?? null,
-        str(session, 'shardHash') ?? '',
-        'resolved',
-        str(session, 'createdAt') ?? null,
-        str(session, 'lastUsedAt') ?? null,
-        typeof session.version === 'number' ? session.version : 0,
-        str(session, 'activeJobId') ?? null,
-        str(session, 'lastJobId') ?? null,
+        session.provider ?? null,
+        session.name ?? null,
+        session.agentName ?? null,
+        session.state ?? null,
+        session.activeJobId ?? null,
+        session.lastJobId ?? null,
+        session.conversationRef ?? null,
+        session.providerContinuity ? JSON.stringify(session.providerContinuity) : null,
+        session.model ?? null,
+        session.cwd ?? null,
+        session.projectRoot ?? null,
+        session.backendNamespace ?? null,
+        session.provenanceState,
+        session.createdAt ?? null,
+        session.lastUsedAt ?? null,
+        typeof session.version === 'number' ? session.version : null,
         connectionId,
         originSessionId,
       );

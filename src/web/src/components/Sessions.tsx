@@ -25,7 +25,13 @@ export function Sessions() {
         }
 
         setSessions(response.sessions);
-        setSelectedId((current) => current ?? response.sessions[0]?.sessionId ?? null);
+        setSelectedId((current) => {
+          if (current && response.sessions.some((session) => session.sessionId === current)) {
+            return current;
+          }
+
+          return response.sessions[0]?.sessionId ?? null;
+        });
         setError(null);
       } catch (loadError) {
         if (active) {
@@ -96,7 +102,8 @@ export function Sessions() {
         </div>
         <h2 style={{ marginTop: 8, fontSize: 34, lineHeight: 1.05 }}>Sessions</h2>
         <p style={{ marginTop: 10, maxWidth: 740, color: '#475569', lineHeight: 1.7 }}>
-          Session inventory from <code>/api/sessions</code> with a focused detail pane for the selected session.
+          Session inventory from reef&apos;s local <code>/api/sessions</code> index, including remotely synced backend
+          sessions from <code>/sessions</code> and reef-local cold-scan entries.
         </p>
       </header>
 
@@ -110,9 +117,10 @@ export function Sessions() {
             <thead>
               <tr>
                 <th>Session</th>
+                <th>Agent</th>
                 <th>Provider</th>
                 <th>State</th>
-                <th>Model</th>
+                <th>Provenance</th>
                 <th>Last Used</th>
               </tr>
             </thead>
@@ -128,11 +136,15 @@ export function Sessions() {
                     background: session.sessionId === selectedId ? 'rgba(191, 219, 254, 0.35)' : undefined,
                   }}
                 >
-                  <td>{truncateId(session.sessionId)}</td>
-                  <td>{session.provider}</td>
-                  <td>{session.state}</td>
-                  <td>{session.model}</td>
-                  <td>{formatDateTime(session.lastUsedAt)}</td>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{session.name ?? truncateId(session.sessionId)}</div>
+                    <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>{truncateId(session.sessionId)}</div>
+                  </td>
+                  <td>{session.agentName ?? 'n/a'}</td>
+                  <td>{session.provider ?? 'n/a'}</td>
+                  <td>{session.state ?? 'n/a'}</td>
+                  <td>{session.provenanceState}</td>
+                  <td>{formatDateTime(session.lastUsedAt ?? null)}</td>
                 </tr>
               ))}
             </tbody>
@@ -154,18 +166,20 @@ export function Sessions() {
           {selectedSession ? (
             <div style={{ display: 'grid', gap: 12 }}>
               <DetailRow label="Session ID" value={selectedSession.sessionId} />
-              <DetailRow label="Provider" value={selectedSession.provider} />
-              <DetailRow label="Name" value={selectedSession.name} />
-              <DetailRow label="State" value={selectedSession.state} />
-              <DetailRow label="Model" value={selectedSession.model} />
-              <DetailRow label="Working Directory" value={selectedSession.cwd} />
-              <DetailRow label="Project Root" value={selectedSession.projectRoot ?? 'n/a'} />
-              <DetailRow label="Shard Hash" value={selectedSession.shardHash} />
+              <DetailRow label="Provider" value={displaySessionValue(selectedSession.provider)} />
+              <DetailRow label="Name" value={displaySessionValue(selectedSession.name)} />
+              <DetailRow label="Agent" value={displaySessionValue(selectedSession.agentName)} />
+              <DetailRow label="State" value={displaySessionValue(selectedSession.state)} />
+              <DetailRow label="Model" value={displaySessionValue(selectedSession.model)} />
+              <DetailRow label="Working Directory" value={displaySessionValue(selectedSession.cwd)} />
+              <DetailRow label="Project Root" value={displaySessionValue(selectedSession.projectRoot)} />
+              <DetailRow label="Backend Namespace" value={displaySessionValue(selectedSession.backendNamespace)} />
+              {selectedSession.shardHash ? <DetailRow label="Shard Hash" value={selectedSession.shardHash} /> : null}
               <DetailRow label="Provenance" value={selectedSession.provenanceState} />
-              <DetailRow label="Created" value={formatDateTime(selectedSession.createdAt)} />
-              <DetailRow label="Last Used" value={formatDateTime(selectedSession.lastUsedAt)} />
-              <DetailRow label="Active Job" value={selectedSession.activeJobId ?? 'n/a'} />
-              <DetailRow label="Last Job" value={selectedSession.lastJobId ?? 'n/a'} />
+              <DetailRow label="Created" value={formatDateTime(selectedSession.createdAt ?? null)} />
+              <DetailRow label="Last Used" value={formatDateTime(selectedSession.lastUsedAt ?? null)} />
+              <DetailRow label="Active Job" value={displaySessionValue(selectedSession.activeJobId)} />
+              <DetailRow label="Last Job" value={displaySessionValue(selectedSession.lastJobId)} />
             </div>
           ) : (
             <div style={{ color: '#64748b' }}>No session selected.</div>
@@ -196,4 +210,8 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 
 function readError(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error';
+}
+
+function displaySessionValue(value: string | undefined): string {
+  return value ?? 'n/a';
 }

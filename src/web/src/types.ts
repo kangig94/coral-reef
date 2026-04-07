@@ -27,21 +27,27 @@ export type ProgressEvent = {
   payload: string | null;
 };
 
+export type SessionProvenanceState = 'authoritative' | 'legacy_unresolved';
+
 export type Session = {
   sessionId: string;
-  provider: string;
-  name: string;
-  state: string;
-  model: string;
-  cwd: string;
-  projectRoot: string | null;
-  shardHash: string;
-  provenanceState: string;
-  createdAt: string | null;
-  lastUsedAt: string | null;
-  version: number;
-  activeJobId: string | null;
-  lastJobId: string | null;
+  provider?: string;
+  name?: string;
+  agentName?: string;
+  state?: string;
+  activeJobId?: string;
+  lastJobId?: string;
+  conversationRef?: string;
+  providerContinuity?: Record<string, unknown>;
+  model?: string;
+  cwd?: string;
+  projectRoot?: string;
+  backendNamespace?: string;
+  shardHash?: string;
+  provenanceState: SessionProvenanceState;
+  createdAt?: string;
+  lastUsedAt?: string;
+  version?: number;
 };
 
 export type DiscussSession = {

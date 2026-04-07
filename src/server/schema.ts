@@ -3,7 +3,8 @@ import Database from 'better-sqlite3';
 // Schema version history:
 //   0 — original schema (no connections, no source-aware columns)
 //   1 — connections table + connectionId/originId columns on jobs/sessions/discuss_sessions
-const CURRENT_VERSION = 1;
+//   2 — lenient session storage for flat backend DTOs + local-only shard metadata
+const CURRENT_VERSION = 2;
 
 export function initSchema(db: Database.Database): void {
   db.exec(`
@@ -152,6 +153,73 @@ function migrateSchema(db: Database.Database): void {
       db.exec(`ALTER TABLE discuss_sessions ADD COLUMN connectionId TEXT NOT NULL DEFAULT 'local:auto'`);
       db.exec(`ALTER TABLE discuss_sessions ADD COLUMN originDiscussSessionId TEXT`);
       db.pragma('user_version = 1');
+    })();
+  }
+
+  if (version < 2) {
+    db.transaction(() => {
+      db.exec('DROP TABLE IF EXISTS sessions_v2');
+      db.exec(`
+        CREATE TABLE sessions_v2 (
+          sessionId TEXT PRIMARY KEY,
+          provider TEXT,
+          name TEXT,
+          agentName TEXT,
+          state TEXT,
+          activeJobId TEXT,
+          lastJobId TEXT,
+          conversationRef TEXT,
+          providerContinuity TEXT,
+          model TEXT,
+          cwd TEXT,
+          projectRoot TEXT,
+          backendNamespace TEXT,
+          shardHash TEXT,
+          provenanceState TEXT NOT NULL DEFAULT 'legacy_unresolved',
+          createdAt TEXT,
+          lastUsedAt TEXT,
+          version INTEGER,
+          connectionId TEXT NOT NULL DEFAULT 'local:auto',
+          originSessionId TEXT
+        )
+      `);
+      db.exec(`
+        INSERT INTO sessions_v2 (
+          sessionId, provider, name, agentName, state, activeJobId, lastJobId, conversationRef,
+          providerContinuity, model, cwd, projectRoot, backendNamespace, shardHash, provenanceState,
+          createdAt, lastUsedAt, version, connectionId, originSessionId
+        )
+        SELECT
+          sessionId,
+          NULLIF(provider, ''),
+          NULLIF(name, ''),
+          NULL,
+          NULLIF(state, ''),
+          activeJobId,
+          lastJobId,
+          NULL,
+          NULL,
+          NULLIF(model, ''),
+          NULLIF(cwd, ''),
+          projectRoot,
+          NULL,
+          NULLIF(shardHash, ''),
+          CASE
+            WHEN provenanceState = 'authoritative' THEN 'authoritative'
+            WHEN provenanceState = 'legacy_unresolved' THEN 'legacy_unresolved'
+            WHEN provenanceState = 'resolved' THEN 'authoritative'
+            ELSE 'legacy_unresolved'
+          END,
+          createdAt,
+          lastUsedAt,
+          version,
+          connectionId,
+          originSessionId
+        FROM sessions
+      `);
+      db.exec('DROP TABLE sessions');
+      db.exec('ALTER TABLE sessions_v2 RENAME TO sessions');
+      db.pragma('user_version = 2');
     })();
   }
 }

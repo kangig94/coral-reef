@@ -2,17 +2,14 @@ import type Database from 'better-sqlite3';
 import { readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
-  JOBS_DIR,
-  SESSION_BASE,
   buildDiscussDetail,
-  discussBaseDir,
   readDiscussDiscovery,
   readDiscussSnapshot,
   readProgressLog,
   readSessionEntryLenient,
   readStatusRecord,
-  syncHomePaths,
 } from 'coral/client';
+import { JOBS_DIR, discussBaseDir, sessionBase } from 'coral/infra';
 import { upsertDiscussDetail } from './discuss-index.js';
 
 const SESSION_DIR_PATTERN = /^((?:\d{8}-\d{6}|\d{6}-\d{4})-[a-z0-9]+)-(.+)$/;
@@ -30,9 +27,27 @@ type DiscoveredDiscussSession = {
   createdAt: string | null;
 };
 
-export function coldScan(db: Database.Database): ColdScanResult {
-  syncHomePaths();
+type LenientIndexedSession = {
+  sessionId: string;
+  provider?: string;
+  name?: string;
+  agentName?: string;
+  state?: string;
+  activeJobId?: string;
+  lastJobId?: string;
+  conversationRef?: string;
+  providerContinuity?: Record<string, unknown>;
+  model?: string;
+  cwd?: string;
+  projectRoot?: string;
+  backendNamespace?: string;
+  createdAt?: string;
+  lastUsedAt?: string;
+  version?: number;
+  provenanceState: 'authoritative' | 'legacy_unresolved';
+};
 
+export function coldScan(db: Database.Database): ColdScanResult {
   const jobs = scanJobs(db);
   const sessions = scanSessions(db);
   const discussSessions = scanDiscussSessions(db);
@@ -112,20 +127,22 @@ function scanJobs(db: Database.Database): number {
 function scanSessions(db: Database.Database): number {
   let shardDirs: string[];
   try {
-    shardDirs = readdirSync(SESSION_BASE, { withFileTypes: true })
+    const baseDir = sessionBase();
+    shardDirs = readdirSync(baseDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => join(SESSION_BASE, entry.name));
+      .map((entry) => join(baseDir, entry.name));
   } catch {
     return 0;
   }
 
   const insertSession = db.prepare(`
     INSERT OR REPLACE INTO sessions (
-      sessionId, provider, name, state, model, cwd, projectRoot, shardHash,
-      provenanceState, createdAt, lastUsedAt, version, activeJobId, lastJobId,
+      sessionId, provider, name, agentName, state, activeJobId, lastJobId, conversationRef,
+      providerContinuity, model, cwd, projectRoot, backendNamespace, shardHash, provenanceState,
+      createdAt, lastUsedAt, version,
       connectionId, originSessionId
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   let count = 0;
@@ -140,26 +157,30 @@ function scanSessions(db: Database.Database): number {
       }
 
       for (const file of files) {
-        const entry = readSessionEntryLenient(join(shardDir, file));
+        const entry = readSessionEntryLenient(join(shardDir, file)) as LenientIndexedSession | null;
         if (!entry) {
           continue;
         }
 
         insertSession.run(
           entry.sessionId,
-          entry.provider ?? 'unknown',
-          entry.name ?? '',
-          entry.state ?? 'pending',
-          entry.model ?? 'unknown',
-          entry.cwd ?? '',
-          entry.projectRoot ?? null,
-          shardHash,
-          entry.provenanceState === 'authoritative' ? 'resolved' : 'legacy_unresolved',
-          entry.createdAt ?? null,
-          entry.lastUsedAt ?? null,
-          entry.version ?? 0,
+          entry.provider ?? null,
+          entry.name ?? null,
+          entry.agentName ?? null,
+          entry.state ?? null,
           entry.activeJobId ?? null,
           entry.lastJobId ?? null,
+          entry.conversationRef ?? null,
+          entry.providerContinuity ? JSON.stringify(entry.providerContinuity) : null,
+          entry.model ?? null,
+          entry.cwd ?? null,
+          entry.projectRoot ?? null,
+          entry.backendNamespace ?? null,
+          shardHash,
+          entry.provenanceState,
+          entry.createdAt ?? null,
+          entry.lastUsedAt ?? null,
+          typeof entry.version === 'number' ? entry.version : null,
           'local:auto',
           entry.sessionId,
         );

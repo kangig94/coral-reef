@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
-import { BACKEND_INFO_PATH, type BackendHealth } from 'coral/client';
+import type { BackendHealth } from 'coral/client';
+import { LOCAL_BACKEND_INFO_PATH } from '../coral-paths.js';
 import type { ConnectionManager } from '../indexer/connection-manager.js';
 import { getIndexerStatus } from '../indexer/index.js';
 import { sendJson } from './router.js';
@@ -87,7 +88,7 @@ function countRows(db: Database.Database, tableName: string): number {
 
 function readBackendInfoFile(): BackendInfoFile | null {
   try {
-    const raw = JSON.parse(readFileSync(BACKEND_INFO_PATH, 'utf-8')) as unknown;
+    const raw = JSON.parse(readFileSync(LOCAL_BACKEND_INFO_PATH, 'utf-8')) as unknown;
     return isBackendInfoFile(raw) ? raw : null;
   } catch {
     return null;
