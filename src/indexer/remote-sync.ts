@@ -47,7 +47,7 @@ export async function remoteSync(db: Database.Database, config: SyncConfig): Pro
   const [jobsRes, sessionsRes, discussRes] = await Promise.all([
     safeFetch<{ jobs: Array<Record<string, unknown>> }>(`${baseUrl}/api/jobs`, headers, signal),
     safeFetch<{ sessions: RemoteSessionEntry[] }>(`${baseUrl}/sessions`, headers, signal),
-    safeFetch<{ sessions: Array<Record<string, unknown>> }>(`${baseUrl}/api/discuss`, headers, signal),
+    safeFetch<{ sessions: Array<Record<string, unknown>> }>(`${baseUrl}/discuss/sessions`, headers, signal),
   ]);
 
   if (signal?.aborted) return;
@@ -240,7 +240,7 @@ function buildDiscussDetailUrl(
   sessionId: string,
   view: 'control' | 'audit',
 ): string {
-  return `${baseUrl}/api/discuss/detail?projectRoot=${encodeURIComponent(projectRoot)}&sessionId=${encodeURIComponent(sessionId)}&view=${view}`;
+  return `${baseUrl}/discuss/sessions/${encodeURIComponent(sessionId)}?projectRoot=${encodeURIComponent(projectRoot)}&view=${view}`;
 }
 
 async function safeFetch<T>(
