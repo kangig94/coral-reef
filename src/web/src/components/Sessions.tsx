@@ -48,7 +48,7 @@ export function Sessions() {
     wsClient.connect();
 
     const unsubscribe = wsClient.subscribe((event) => {
-      if (event === 'connected' || event === 'ready' || event === 'session:updated') {
+      if (event === 'connected' || event === 'ready') {
         void loadSessions();
       }
     });
@@ -83,7 +83,7 @@ export function Sessions() {
     void loadSession();
 
     const unsubscribe = wsClient.subscribe((event) => {
-      if (event === 'session:updated' || event === 'ready' || event === 'connected') {
+      if (event === 'ready' || event === 'connected') {
         void loadSession();
       }
     });
@@ -102,8 +102,8 @@ export function Sessions() {
         </div>
         <h2 style={{ marginTop: 8, fontSize: 34, lineHeight: 1.05 }}>Sessions</h2>
         <p style={{ marginTop: 10, maxWidth: 740, color: '#475569', lineHeight: 1.7 }}>
-          Session inventory from reef&apos;s local <code>/api/sessions</code> index, including remotely synced backend
-          sessions from <code>/sessions</code> and reef-local cold-scan entries.
+          Session inventory from reef&apos;s local <code>/api/sessions</code> index, populated by reef-local
+          cold-scan of provider session shards.
         </p>
       </header>
 

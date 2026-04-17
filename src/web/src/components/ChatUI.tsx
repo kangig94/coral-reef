@@ -30,7 +30,7 @@ export function ChatUI() {
   useEffect(() => {
     wsClient.connect();
     const unsubscribe = wsClient.subscribe((event, data) => {
-      if (event !== 'connected' && event !== 'ready' && !event.startsWith('job:') && event !== 'session:updated') {
+      if (event !== 'connected' && event !== 'ready' && !event.startsWith('job:')) {
         return;
       }
 

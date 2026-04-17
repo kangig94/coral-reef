@@ -17,36 +17,13 @@ export type DiscussSyncParams = {
   status: string;
 };
 
-type RemoteSessionProvenanceState = 'authoritative' | 'legacy_unresolved';
-
-type RemoteSessionEntry = {
-  sessionId: string;
-  provider?: string;
-  name?: string;
-  agentName?: string;
-  state?: string;
-  activeJobId?: string;
-  lastJobId?: string;
-  conversationRef?: string;
-  providerContinuity?: Record<string, unknown>;
-  model?: string;
-  cwd?: string;
-  projectRoot?: string;
-  backendNamespace?: string;
-  createdAt?: string;
-  lastUsedAt?: string;
-  version?: number;
-  provenanceState: RemoteSessionProvenanceState;
-};
-
 export async function remoteSync(db: Database.Database, config: SyncConfig): Promise<void> {
   const { connectionId, host, port, token, signal } = config;
   const baseUrl = `http://${host}:${port}`;
   const headers: Record<string, string> = { 'X-Coral-Backend-Token': token };
 
-  const [jobsRes, sessionsRes, discussRes] = await Promise.all([
-    safeFetch<{ jobs: Array<Record<string, unknown>> }>(`${baseUrl}/api/jobs`, headers, signal),
-    safeFetch<{ sessions: RemoteSessionEntry[] }>(`${baseUrl}/sessions`, headers, signal),
+  const [jobsRes, discussRes] = await Promise.all([
+    safeFetch<{ jobs: Array<Record<string, unknown>> }>(`${baseUrl}/jobs`, headers, signal),
     safeFetch<{ sessions: Array<Record<string, unknown>> }>(`${baseUrl}/discuss/sessions`, headers, signal),
   ]);
 
@@ -54,10 +31,6 @@ export async function remoteSync(db: Database.Database, config: SyncConfig): Pro
 
   if (jobsRes && Array.isArray(jobsRes.jobs)) {
     syncJobs(db, connectionId, jobsRes.jobs);
-  }
-
-  if (sessionsRes && Array.isArray(sessionsRes.sessions)) {
-    syncSessions(db, connectionId, sessionsRes.sessions);
   }
 
   if (discussRes && Array.isArray(discussRes.sessions)) {
@@ -106,57 +79,6 @@ function syncJobs(db: Database.Database, connectionId: string, jobs: Array<Recor
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`[sync:${connectionId}] Jobs sync failed: ${message}\n`);
-  }
-}
-
-function syncSessions(db: Database.Database, connectionId: string, sessions: RemoteSessionEntry[]): void {
-  const insert = db.prepare(`
-    INSERT OR REPLACE INTO sessions (
-      sessionId, provider, name, agentName, state, activeJobId, lastJobId, conversationRef,
-      providerContinuity, model, cwd, projectRoot, backendNamespace, provenanceState,
-      createdAt, lastUsedAt, version,
-      connectionId, originSessionId
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const transaction = db.transaction((): void => {
-    for (const session of sessions) {
-      const originSessionId = session.sessionId;
-      if (originSessionId.length === 0) {
-        continue;
-      }
-      const reefSessionId = toReefId(connectionId, originSessionId);
-
-      insert.run(
-        reefSessionId,
-        session.provider ?? null,
-        session.name ?? null,
-        session.agentName ?? null,
-        session.state ?? null,
-        session.activeJobId ?? null,
-        session.lastJobId ?? null,
-        session.conversationRef ?? null,
-        session.providerContinuity ? JSON.stringify(session.providerContinuity) : null,
-        session.model ?? null,
-        session.cwd ?? null,
-        session.projectRoot ?? null,
-        session.backendNamespace ?? null,
-        session.provenanceState,
-        session.createdAt ?? null,
-        session.lastUsedAt ?? null,
-        typeof session.version === 'number' ? session.version : null,
-        connectionId,
-        originSessionId,
-      );
-    }
-  });
-
-  try {
-    transaction();
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`[sync:${connectionId}] Sessions sync failed: ${message}\n`);
   }
 }
 

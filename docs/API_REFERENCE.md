@@ -81,7 +81,7 @@ Events emitted to WebSocket clients mirror the SSE events received from the cora
 | `job:phase_changed` | relayed | Job phase transition |
 | `job:progress` | relayed | Job progress event |
 | `job:completed` | relayed | Job finished |
-| `session:updated` | relayed | Session state changed |
+| `discuss:updated` | relayed | Discuss session state changed |
 
 Frontend components use `wsClient.subscribe(handler)` and call `fetchApi` to refresh data on any `job:*` or `ready` event.
 

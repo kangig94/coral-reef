@@ -38,7 +38,7 @@ coral-reef is a full-stack TypeScript dashboard for the Coral CLI plugin. It ind
 ```
 coral backend
     │
-    │  SSE /events/stream (job:created, job:phase_changed, job:progress, job:completed, session:updated)
+    │  SSE /events/stream (job:created, job:phase_changed, job:progress, job:completed, discuss:updated)
     ▼
 SseClient (src/indexer/sse-client.ts)
     │  ├── SQLite mutations (best-effort INSERT/UPDATE)

@@ -9,7 +9,7 @@ import {
   readSessionEntryLenient,
   readStatusRecord,
 } from 'coral/client';
-import { JOBS_DIR, discussBaseDir, sessionBase } from 'coral/infra';
+import { discussBaseDir, jobsDir, sessionBase } from 'coral/infra';
 import { upsertDiscussDetail } from './discuss-index.js';
 
 const SESSION_DIR_PATTERN = /^((?:\d{8}-\d{6}|\d{6}-\d{4})-[a-z0-9]+)-(.+)$/;
@@ -58,7 +58,7 @@ export function coldScan(db: Database.Database): ColdScanResult {
 function scanJobs(db: Database.Database): number {
   let jobIds: string[];
   try {
-    jobIds = readdirSync(JOBS_DIR);
+    jobIds = readdirSync(jobsDir());
   } catch {
     return 0;
   }
